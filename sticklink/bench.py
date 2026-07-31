@@ -155,6 +155,7 @@ class Bench:
         self.read_only = False        # nothing writable here; read phases only
         self.read_source = ""         # human-readable description of what reads hit
         self.writing = False          # a write is in flight - unplugging risks the filesystem
+        self.phase = ""               # phase actually running, as opposed to the one pinned
         self.direct_file = False
         self.direct_raw = False
         self.raw_read = False
@@ -168,6 +169,7 @@ class Bench:
         self._seq_offset = 0
         self._stop_current = False    # abandon this stick and re-pick
         self._eject = threading.Event()
+        self._interrupt = threading.Event()   # abandon this phase, but keep the device
         self._ejected_name = None     # do not re-acquire this until it is unplugged
         self._last_error = None       # suppress identical repeats while retrying
         self._retry_delay = 2.0
@@ -185,13 +187,18 @@ class Bench:
         self._teardown()
 
     def _running(self) -> bool:
-        """False as soon as anything wants the current device released.
+        """False as soon as anything wants the phase in flight to end.
 
-        Checked inside every I/O loop, not just between phases, so an eject or a
-        device change lands within one operation rather than after the rest of a
-        twenty-second phase.
+        Checked inside every I/O loop, not just between phases, so an eject, a
+        device change or a pinned-phase change lands within one operation rather
+        than after the rest of a twenty-second slot.
+
+        Note the asymmetry: ``_stop``/``_stop_current`` end the whole cycle and
+        release the device, whereas ``_interrupt`` only abandons the current
+        phase - the loop in _cycle deliberately does not test it.
         """
-        return not self._stop.is_set() and not self._stop_current
+        return (not self._stop.is_set() and not self._stop_current
+                and not self._interrupt.is_set())
 
     def select(self, name: str | None):
         """Point the bench at a different stick; takes effect next cycle."""
@@ -252,6 +259,13 @@ class Bench:
 
     def pin(self, phase: str | None):
         self.pinned = phase
+        # Abandon the phase in flight so the switch is immediate. Asking for
+        # reads while a write phase had eighteen seconds left used to mean
+        # eighteen more seconds of writing, which reads as the button not
+        # working. Selecting "rotate" does not interrupt: whatever is running is
+        # a legitimate member of the rotation already.
+        if phase and phase != self.phase:
+            self._interrupt.set()
         self.metrics.event("pin", phase or "rotate all phases")
 
     # -- setup -------------------------------------------------------------
@@ -496,6 +510,7 @@ class Bench:
                 self._teardown()
                 self.target = None
                 self.writing = False
+                self.phase = ""
                 self.metrics.set_phase("idle")
 
             if self._eject.is_set():
@@ -518,6 +533,11 @@ class Bench:
         index = 0
         skipped = 0
         while not self._stop.is_set() and not self._stop_current:
+            # Cleared before reading self.pinned, never after: a pin arriving in
+            # between would otherwise be swallowed by the clear and the old
+            # phase would run its whole slot.
+            self._interrupt.clear()
+
             # A pin for a write phase cannot be honoured on a read-only device.
             pinned = self.pinned
             if pinned not in order:
@@ -543,6 +563,7 @@ class Bench:
                 continue
 
             self.metrics.set_phase(phase)
+            self.phase = phase
             deadline = time.monotonic() + self.phase_seconds[phase]
             # Drives the "do not unplug" indicator. Cleared even if the phase
             # raises, so a failure never leaves it stuck on.
@@ -699,6 +720,7 @@ class Bench:
             "read_only": self.read_only,
             "read_source": self.read_source,
             "writing": self.writing,
+            "phase": self.phase,
             "ejected": self._ejected_name,
             "chunk": self.chunk,
             "rand_block": self.rand_block,

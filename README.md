@@ -19,6 +19,14 @@ deleted when the program exits.
 Four phases rotate continuously — 20 s, 20 s, 10 s, 10 s by default — until you
 stop it. You can pin one phase in the UI and hold it indefinitely.
 
+Pinning takes effect **immediately** — the phase in flight is abandoned rather
+than allowed to run out its slot. The one thing that is never skipped is the
+`fsync` at the end of a write phase, so switching away from writing takes as
+long as the stick needs to commit what it already has: instant on a good stick,
+a second or two on a slow one. The phase indicator shows `writing → reading…`
+while that is happening, and the do-not-unplug warning stays lit until it is
+genuinely done.
+
 | Phase | What it does | Why it matters |
 |---|---|---|
 | Sequential write | 1 MiB `O_DIRECT` writes, queue depth 1 | The headline number, and the one that exposes the write cliff |

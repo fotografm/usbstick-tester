@@ -313,8 +313,14 @@ function render() {
   setState(s.state, s.state);
 
   const phase = s.phase || "idle";
-  $("phasetext").textContent = PHASE_LABEL[phase] || phase;
-  $("phasepill").style.color = css(PHASE_COLOUR[phase] || "--idle");
+  // A pinned phase that is not yet the running one means the switch is in
+  // progress: the operation in flight has to finish, and a write phase must
+  // still complete its fsync, which on a slow stick is not instant.
+  const switching = b.pinned && b.phase && b.pinned !== b.phase;
+  $("phasetext").textContent = switching
+    ? `${PHASE_LABEL[phase] || phase} → ${PHASE_LABEL[b.pinned] || b.pinned}…`
+    : (PHASE_LABEL[phase] || phase);
+  $("phasepill").style.color = css(switching ? "--warning" : (PHASE_COLOUR[phase] || "--idle"));
 
   // Only a fresh reading may drive the headline number; a stale one belongs in
   // the results table as history, not on the hero as if it were current.
