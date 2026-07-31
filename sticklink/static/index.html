@@ -100,6 +100,12 @@
   }
   button[aria-pressed="true"] { border-color: var(--seq-read); color: var(--seq-read); font-weight: 600; }
 
+  .pinlabel { font-size: 11px; color: var(--muted); text-align: right;
+              display: block; margin-bottom: 5px; }
+  #pinbar .live { width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+                  margin-right: 6px; background: transparent;
+                  outline: 1px solid var(--border); }
+
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px;
             color: var(--text-secondary); margin-top: 10px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -157,7 +163,11 @@
             <option value="300">300 s</option>
           </select>
         </div>
-        <div class="controls" id="pinbar"></div>
+        <div>
+          <span class="pinlabel">Hold one test, or rotate through all four ·
+            <span style="opacity:.75">● = running now</span></span>
+          <div class="controls" id="pinbar"></div>
+        </div>
       </div>
     </div>
     <div id="notes"></div>
@@ -353,10 +363,18 @@ function render() {
   $("eject").disabled = !b.target;
   renderInfo(b, s);
   renderResults(s, b);
-  // A write phase cannot be pinned on a device we are not writing to.
   for (const btn of $("pinbar").children) {
-    btn.disabled = !!(b.read_only && btn.dataset.phase.endsWith("write"));
+    const p = btn.dataset.phase;
+    // A write phase cannot be pinned on a device we are not writing to.
+    btn.disabled = !!(b.read_only && p.endsWith("write"));
     btn.style.opacity = btn.disabled ? 0.4 : "";
+    // Pressed tracks the server's pin, not the last thing clicked, so a reload
+    // or a pin the server declined cannot leave the bar lying about the state.
+    btn.setAttribute("aria-pressed", String((b.pinned || "") === p));
+    // Separate signal: which test is executing right now. Without it, nothing
+    // in this row reflects the running phase while rotating.
+    btn.firstChild.style.background =
+      p && p === b.phase ? css(PHASE_COLOUR[p]) : "transparent";
   }
   renderWear(s, t);
   drawChart(t);
@@ -636,12 +654,15 @@ $("pause").onclick = async (e) => {
 $("window").onchange = (e) => { windowS = +e.target.value; render(); };
 
 $("pinbar").innerHTML = ["", ...PHASES].map((p) =>
-  `<button data-phase="${p}" aria-pressed="${p === "" ? "true" : "false"}">${p === "" ? "rotate" : PHASE_LABEL[p]}</button>`
+  `<button data-phase="${p}" title="${p === ""
+      ? "Cycle through all four tests automatically"
+      : `Run ${PHASE_LABEL[p]} continuously instead of cycling`}"><i class="live"></i>${
+    p === "" ? "rotate" : PHASE_LABEL[p]}</button>`
 ).join("");
 $("pinbar").onclick = async (ev) => {
   const btn = ev.target.closest("button");
   if (!btn) return;
-  [...$("pinbar").children].forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+  [...$("pinbar").children].forEach((x) => x.setAttribute("aria-pressed", String(x === btn)));
   await fetch("/api/pin", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ phase: btn.dataset.phase || null }),
