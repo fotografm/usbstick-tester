@@ -36,6 +36,12 @@ async def select(request):
     return web.json_response({"ok": True})
 
 
+async def pause(request):
+    body = await request.json()
+    request.app["bench"].pause(bool(body.get("paused")))
+    return web.json_response({"ok": True})
+
+
 async def eject(request):
     request.app["bench"].eject()
     return web.json_response({"ok": True})
@@ -91,6 +97,7 @@ def build_app(metrics, bench):
             web.post("/api/select", select),
             web.post("/api/pin", pin),
             web.post("/api/eject", eject),
+            web.post("/api/pause", pause),
             web.static("/static", STATIC),
         ]
     )

@@ -156,6 +156,10 @@ class Bench:
         self.read_source = ""         # human-readable description of what reads hit
         self.writing = False          # a write is in flight - unplugging risks the filesystem
         self.phase = ""               # phase actually running, as opposed to the one pinned
+        # Round-trip from a pin request to that phase actually running, measured
+        # on this side so the websocket's push interval does not limit the
+        # resolution. Most recent last.
+        self.switches = []
         self.direct_file = False
         self.direct_raw = False
         self.raw_read = False
@@ -170,6 +174,9 @@ class Bench:
         self._stop_current = False    # abandon this stick and re-pick
         self._eject = threading.Event()
         self._interrupt = threading.Event()   # abandon this phase, but keep the device
+        self._paused = threading.Event()   # stop testing, not just the display
+        self._pin_at = None           # when the pending pin was requested
+        self._pin_phase = None
         self._ejected_name = None     # do not re-acquire this until it is unplugged
         self._last_error = None       # suppress identical repeats while retrying
         self._retry_delay = 2.0
@@ -198,7 +205,7 @@ class Bench:
         phase - the loop in _cycle deliberately does not test it.
         """
         return (not self._stop.is_set() and not self._stop_current
-                and not self._interrupt.is_set())
+                and not self._interrupt.is_set() and not self._paused.is_set())
 
     def select(self, name: str | None):
         """Point the bench at a different stick; takes effect next cycle."""
@@ -206,6 +213,22 @@ class Bench:
         self._ejected_name = None
         self._stop_current = True
         self.metrics.event("select", name or "auto")
+
+    def pause(self, paused: bool):
+        """Stop or resume testing itself.
+
+        This deliberately stops the I/O rather than only freezing the chart. On
+        a tool that consumes real flash endurance, a button labelled Pause that
+        quietly keeps writing is the wrong behaviour: the user believes the
+        stick is idle while it is still being worn and is still unsafe to pull.
+        """
+        if paused:
+            self._paused.set()
+        else:
+            self._paused.clear()
+        self.metrics.set_state("paused" if paused else "running",
+                               "testing paused - the stick is idle" if paused else "")
+        self.metrics.event("pause", "paused" if paused else "resumed")
 
     def eject(self):
         """Finish the current operation, clean up, unmount, and power off.
@@ -265,6 +288,8 @@ class Bench:
         # working. Selecting "rotate" does not interrupt: whatever is running is
         # a legitimate member of the rotation already.
         if phase and phase != self.phase:
+            self._pin_at = time.monotonic()
+            self._pin_phase = phase
             self._interrupt.set()
         self.metrics.event("pin", phase or "rotate all phases")
 
@@ -533,6 +558,15 @@ class Bench:
         index = 0
         skipped = 0
         while not self._stop.is_set() and not self._stop_current:
+            while self._paused.is_set() and not self._stop.is_set() \
+                    and not self._stop_current:
+                self.phase = ""
+                self.writing = False
+                self.metrics.set_phase("paused")
+                self._stop.wait(0.2)
+            if not self._running() and (self._stop.is_set() or self._stop_current):
+                return
+
             # Cleared before reading self.pinned, never after: a pin arriving in
             # between would otherwise be swallowed by the clear and the old
             # phase would run its whole slot.
@@ -563,7 +597,20 @@ class Bench:
                 continue
 
             self.metrics.set_phase(phase)
+            was = self.phase
             self.phase = phase
+
+            if self._pin_phase == phase and self._pin_at is not None:
+                took = (time.monotonic() - self._pin_at) * 1000.0
+                self.switches.append({
+                    "phase": phase, "from": was, "ms": round(took, 1),
+                    "wall": time.time(),
+                })
+                del self.switches[:-20]
+                self.metrics.event(
+                    "switch", f"{was or 'idle'} to {phase} took {took:.0f} ms")
+                self._pin_at = self._pin_phase = None
+
             deadline = time.monotonic() + self.phase_seconds[phase]
             # Drives the "do not unplug" indicator. Cleared even if the phase
             # raises, so a failure never leaves it stuck on.
@@ -615,11 +662,19 @@ class Bench:
         # Timed as an event rather than folded into throughput: a multi-second
         # flush is a finding in itself, and averaging it into the trace would
         # hide both it and the write rate.
+        # Bracketed by the in-flight watchdog like any other operation. It is
+        # the longest-blocking call in the whole tool - a stick that has stalled
+        # can sit in here for minutes, uninterruptibly - and leaving it untracked
+        # made the UI report "normal" with nothing in flight while the bench was
+        # frozen solid.
+        started = self.metrics.op_start("commit")
         t0 = time.monotonic()
         try:
             os.fsync(self._fd_file)
         except OSError as exc:
             self._guard(exc)
+        finally:
+            self.metrics.op_done(started, 0, "commit")
         flush = time.monotonic() - t0
         if flush > 0.25:
             self.metrics.event("flush", f"fsync held for {flush:.2f}s after writing")
@@ -721,6 +776,8 @@ class Bench:
             "read_source": self.read_source,
             "writing": self.writing,
             "phase": self.phase,
+            "switches": self.switches,
+            "paused": self._paused.is_set(),
             "ejected": self._ejected_name,
             "chunk": self.chunk,
             "rand_block": self.rand_block,

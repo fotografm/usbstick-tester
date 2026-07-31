@@ -139,7 +139,7 @@
         <h1>USB memory stick — live read / write throughput</h1>
         <div class="sub" id="deviceline">looking for a stick…</div>
         <div class="hero">
-          <span class="val" id="mbs">—</span><span class="unit">MB/s</span>
+          <span class="val" id="mbs">—</span><span class="unit" id="mbsunit">MB/s</span>
           <span class="pill" id="phasepill" style="margin-left:6px"><span class="dot"></span><span id="phasetext">idle</span></span>
         </div>
       </div>
@@ -305,7 +305,7 @@ function setState(kind, text) {
 }
 
 function render() {
-  if (!latest || paused) return;
+  if (!latest) return;
   const s = latest, b = s.bench || {};
 
   // The pill carries the state word only; the detail behind it is already the
@@ -331,10 +331,16 @@ function render() {
   // A long operation is invisible in the throughput trace until it completes,
   // so the in-flight watchdog is what makes a stall show up immediately.
   if (s.inflight && s.inflight.elapsed > 0.75) {
-    $("mbs").textContent = "stalled";
+    $("mbs").textContent = s.inflight.phase === "commit"
+      ? `committing ${s.inflight.elapsed.toFixed(0)}s`
+      : `stalled ${s.inflight.elapsed.toFixed(0)}s`;
     $("mbs").style.color = css("--critical");
+    // The headline is a status word here, not a rate - "committing 40s MB/s"
+    // reads as nonsense.
+    $("mbsunit").style.display = "none";
   } else {
     $("mbs").style.color = "";
+    $("mbsunit").style.display = "";
   }
 
   const t = b.target;
@@ -367,6 +373,7 @@ const WHY = {
   error:     ["Could not start testing", ""],
   gone:      ["The stick was removed", "Plug it back in and testing resumes."],
   offline:   ["Lost contact with the server", "Is run.py still running?"],
+  paused:    ["Paused", "Testing is stopped and the stick is idle."],
   ejecting:  ["Ejecting", "Finishing the current operation, then unmounting."],
   ejected:   ["Ejected", "You can unplug it now. Plug another in to carry on."],
   eject_failed: ["Eject failed — do not unplug", "Testing has stopped and the test file is gone, but the filesystem is still mounted."],
@@ -381,6 +388,7 @@ function renderUnplug(b, s) {
   else if (s.state === "eject_failed") { colour = "--critical"; text = "Still mounted — do not unplug"; }
   else if (s.state === "ejecting") { colour = "--warning"; text = "Ejecting…"; }
   else if (!b.target) { colour = "--muted"; text = "No stick"; }
+  else if (s.state === "paused") { colour = "--good"; text = "Paused — safe to unplug"; }
   else if (b.writing) { colour = "--critical"; text = "Writing — do not unplug"; }
   else { colour = "--good"; text = "Reading — safe to unplug"; }
   $("unplug").style.color = css(colour);
@@ -614,11 +622,16 @@ $("eject").onclick = async (e) => {
   setTimeout(() => { e.target.textContent = "⏏ Eject"; }, 3000);
 };
 
-$("pause").onclick = (e) => {
+$("pause").onclick = async (e) => {
   paused = !paused;
   e.target.setAttribute("aria-pressed", String(paused));
   e.target.textContent = paused ? "Resume" : "Pause";
-  if (!paused) render();
+  // Stops the testing, not just the drawing: a pause that keeps writing would
+  // go on wearing the stick while the user believes it is idle.
+  await fetch("/api/pause", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paused }),
+  });
 };
 $("window").onchange = (e) => { windowS = +e.target.value; render(); };
 
