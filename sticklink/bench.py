@@ -466,10 +466,15 @@ class Bench:
         # instead of waiting a whole write pass for the extent to exist.
         self._written_high = min(existing, self.file_size)
         self._seq_offset = 0
-        try:
-            os.ftruncate(self._fd_file, self.file_size)
-        except OSError:
-            pass  # the write pass extends it naturally; not worth failing over
+        # Deliberately NOT preallocated. FAT has no sparse files, so extending
+        # with ftruncate makes the kernel physically write zeros for the whole
+        # length - 2 GiB of buffered writes before the benchmark even starts,
+        # which on a slow stick is minutes of hidden I/O and leaves a mountain
+        # of dirty pages for the first fsync to flush. That looked exactly like
+        # a failing device, and was not.
+        #
+        # It bought nothing anyway: reads and random writes are gated on
+        # _written_high, and the sequential pass extends the file as it goes.
 
         for note in self.notes:
             self.metrics.event("note", note)
