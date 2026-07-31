@@ -226,8 +226,9 @@ class Bench:
             self._paused.set()
         else:
             self._paused.clear()
-        self.metrics.set_state("paused" if paused else "running",
-                               "testing paused - the stick is idle" if paused else "")
+        # The state is set by _cycle, not here: resuming when no stick is
+        # present would otherwise overwrite "searching" with a "running" that
+        # is not true, and the UI would claim to be testing nothing.
         self.metrics.event("pause", "paused" if paused else "resumed")
 
     def eject(self):
@@ -525,7 +526,7 @@ class Bench:
             self.metrics.event("start", detail)
 
             try:
-                self._cycle()
+                self._cycle(detail)
             except DeviceGone as exc:
                 self.metrics.set_state("gone", str(exc))
                 self.metrics.event("gone", str(exc))
@@ -551,21 +552,24 @@ class Bench:
                 # out - eject means stop, and only a replug or an explicit
                 # device selection resumes.
 
-    def _cycle(self):
+    def _cycle(self, detail=""):
         """Rotate through the phases forever, or hold one if pinned."""
         order = [p for p in self.phase_seconds
                  if not (self.read_only and p.endswith("write"))]
         index = 0
         skipped = 0
         while not self._stop.is_set() and not self._stop_current:
-            while self._paused.is_set() and not self._stop.is_set() \
-                    and not self._stop_current:
-                self.phase = ""
-                self.writing = False
-                self.metrics.set_phase("paused")
-                self._stop.wait(0.2)
-            if not self._running() and (self._stop.is_set() or self._stop_current):
-                return
+            if self._paused.is_set():
+                self.metrics.set_state("paused", "testing paused - the stick is idle")
+                while self._paused.is_set() and not self._stop.is_set() \
+                        and not self._stop_current:
+                    self.phase = ""
+                    self.writing = False
+                    self.metrics.set_phase("paused")
+                    self._stop.wait(0.2)
+                if self._stop.is_set() or self._stop_current:
+                    return
+                self.metrics.set_state("running", detail)
 
             # Cleared before reading self.pinned, never after: a pin arriving in
             # between would otherwise be swallowed by the clear and the old
