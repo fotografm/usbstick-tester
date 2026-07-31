@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>usbstick-tester — USB memory stick read/write monitor</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --seq-write: #d03b3b;
+    --seq-read: #2a78d6;
+    --rand-read: #0ca30c;
+    --rand-write: #fab219;
+    --idle: #898781;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --seq-write: #e05a5a;
+      --seq-read: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --seq-write: #e05a5a;
+    --seq-read: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    background: var(--plane); color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--text-secondary); }
+  .sub { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+
+  .top { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .top .grow { flex: 1 1 280px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 999px; font-weight: 600; font-size: 13px;
+    border: 1px solid var(--border); white-space: nowrap;
+  }
+  .pill .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+
+  .hero { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .hero .val { font-size: 40px; font-weight: 650; letter-spacing: -0.02em;
+               font-variant-numeric: tabular-nums; }
+  .hero .unit { font-size: 15px; color: var(--text-secondary); }
+
+  canvas { display: block; width: 100%; touch-action: none; }
+  #chart { height: 250px; }
+  #latchart { height: 130px; }
+  .chartwrap { position: relative; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 9px; font-size: 12px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.16); transition: opacity .1s; white-space: nowrap;
+  }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, select {
+    font: inherit; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--plane);
+    color: var(--text-primary); cursor: pointer;
+  }
+  button[aria-pressed="true"] { border-color: var(--seq-read); color: var(--seq-read); font-weight: 600; }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px;
+            color: var(--text-secondary); margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 11px; height: 3px; border-radius: 2px; display: inline-block; }
+
+  .info { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 14px; }
+  .info .k { font-size: 12px; color: var(--muted); }
+  .info .v { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+  /* A deep automount path would otherwise stretch its cell into a column of
+     single characters and shove the rest of the grid off screen. */
+  .info .v.path { font-size: 13px; font-weight: 500; max-height: 3.2em; overflow: hidden; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.n { font-variant-numeric: tabular-nums; text-align: right; }
+  td.t { font-variant-numeric: tabular-nums; color: var(--text-secondary); white-space: nowrap; }
+  .log { max-height: 220px; overflow-y: auto; }
+  .scroll-x { overflow-x: auto; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 7px; }
+
+  .warn {
+    border-left: 3px solid var(--warning); padding: 8px 12px; margin-top: 12px;
+    font-size: 13px; color: var(--text-secondary); background: var(--plane);
+    border-radius: 0 7px 7px 0;
+  }
+  .warn.stop { border-left-color: var(--critical); }
+  .warn b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <div class="top">
+      <div class="grow">
+        <h1>USB memory stick — live read / write throughput</h1>
+        <div class="sub" id="deviceline">looking for a stick…</div>
+        <div class="hero">
+          <span class="val" id="mbs">—</span><span class="unit">MB/s</span>
+          <span class="pill" id="phasepill" style="margin-left:6px"><span class="dot"></span><span id="phasetext">idle</span></span>
+        </div>
+      </div>
+      <div style="display:grid;gap:8px;justify-items:end">
+        <span class="pill" id="state"><span class="dot"></span><span id="statetext">connecting</span></span>
+        <span class="pill" id="unplug"><span class="dot"></span><span id="unplugtext">—</span></span>
+        <div class="controls">
+          <select id="devsel" title="Stick under test"><option value="">auto-detect</option></select>
+          <button id="eject" title="Stop testing, delete the test file, unmount and power off">⏏ Eject</button>
+          <button id="pause" aria-pressed="false">Pause</button>
+          <select id="window" title="Time window">
+            <option value="30">30 s</option>
+            <option value="60" selected>60 s</option>
+            <option value="120">120 s</option>
+            <option value="300">300 s</option>
+          </select>
+        </div>
+        <div class="controls" id="pinbar"></div>
+      </div>
+    </div>
+    <div id="notes"></div>
+  </div>
+
+  <div class="card">
+    <h2>Throughput — MB/s</h2>
+    <div class="chartwrap">
+      <canvas id="chart"></canvas>
+      <div class="tip" id="tip"></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--seq-write)"></i>sequential write</span>
+      <span><i style="background:var(--seq-read)"></i>sequential read</span>
+      <span><i style="background:var(--rand-read)"></i>random read</span>
+      <span><i style="background:var(--rand-write)"></i>random write</span>
+      <span><i style="background:var(--baseline);height:0;border-top:1px dashed var(--baseline)"></i>link ceiling</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Operation latency — worst completion time per 100 ms</h2>
+    <div class="chartwrap"><canvas id="latchart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Results — rolling 10 second window</h2>
+    <div class="scroll-x">
+      <table>
+        <thead><tr>
+          <th>Phase</th><th style="text-align:right">Throughput</th>
+          <th style="text-align:right">IOPS</th><th style="text-align:right">p50</th>
+          <th style="text-align:right">p99</th><th style="text-align:right">worst</th>
+        </tr></thead>
+        <tbody id="results"></tbody>
+      </table>
+    </div>
+    <div class="warn" id="wear">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Device</h2>
+    <div class="info" id="info"></div>
+  </div>
+
+  <div class="card">
+    <h2>Events</h2>
+    <div class="log scroll-x">
+      <table><tbody id="log"></tbody></table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+const PHASES = ["seq_write", "seq_read", "rand_read", "rand_write"];
+const PHASE_LABEL = {
+  seq_write: "sequential write", seq_read: "sequential read",
+  rand_read: "random read", rand_write: "random write", idle: "idle",
+};
+// Figures are rolled up twice a second, so a phase running right now still
+// reports a small non-zero age. Anything older than this is a previous run.
+const STALE_AFTER = 2.0;
+const PHASE_COLOUR = {
+  seq_write: "--seq-write", seq_read: "--seq-read",
+  rand_read: "--rand-read", rand_write: "--rand-write", idle: "--idle",
+};
+
+// Bins are keyed by sequence number rather than appended, because the server
+// amends recent bins as slow operations complete: a write that took four
+// seconds only reports when it finishes, and then retroactively fills the bins
+// it spanned. Overwriting by seq is what makes that arrive correctly.
+const bins = new Map();
+let epoch = null, events = [], latest = null, paused = false;
+let windowS = 60;
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const $ = (id) => document.getElementById(id);
+
+function fmtBytes(n) {
+  if (!n && n !== 0) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return n.toFixed(i === 0 ? 0 : n < 10 ? 2 : n < 100 ? 1 : 0) + " " + u[i];
+}
+// Transfer sizes are powers of two and should read as such: "4 KiB", not the
+// "4.10 KB" that decimal formatting of 4096 produces.
+function fmtBin(n) {
+  if (!n && n !== 0) return "—";
+  const u = ["B", "KiB", "MiB", "GiB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (Number.isInteger(n) ? n : n.toFixed(1)) + " " + u[i];
+}
+function fmtAge(s) {
+  return s < 60 ? `${Math.round(s)}s ago` : `${Math.round(s / 60)}m ago`;
+}
+function fmtLat(s) {
+  if (s == null) return "—";
+  return s < 1 ? (s * 1000).toFixed(s < 0.01 ? 2 : 1) + " ms" : s.toFixed(2) + " s";
+}
+function fmtRate(bps) {
+  if (bps == null) return "—";
+  return (bps / 1e6).toFixed(bps < 1e7 ? 2 : 1) + " MB/s";
+}
+
+// ---- websocket ------------------------------------------------------------
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    const snap = JSON.parse(ev.data);
+    // A restarted server restarts the clock, so a page left open across a
+    // restart would interleave two time axes onto one chart.
+    if (epoch && snap.epoch !== epoch) { bins.clear(); events = []; }
+    epoch = snap.epoch;
+    latest = snap;
+    for (const b of snap.bins) bins.set(b.seq, b);
+    if (snap.events.length) {
+      events = events.concat(snap.events).slice(-300);
+      renderLog();
+    }
+    // Drop anything older than the widest window we can display.
+    const cutoff = snap.elapsed - 305;
+    for (const [k, v] of bins) if (v.t < cutoff) bins.delete(k);
+    render();
+  };
+  ws.onclose = () => {
+    setState("offline", "disconnected");
+    setTimeout(connect, 1000);
+  };
+}
+
+// ---- rendering ------------------------------------------------------------
+
+function setState(kind, text) {
+  const colours = { running: "--good", searching: "--warning", waiting: "--warning",
+                    gone: "--critical", error: "--critical", refused: "--critical",
+                    offline: "--critical", starting: "--muted" };
+  $("state").style.color = css(colours[kind] || "--text-secondary");
+  $("statetext").textContent = text;
+}
+
+function render() {
+  if (!latest || paused) return;
+  const s = latest, b = s.bench || {};
+
+  // The pill carries the state word only; the detail behind it is already the
+  // device subline, and repeating it here just made a very wide pill.
+  setState(s.state, s.state);
+
+  const phase = s.phase || "idle";
+  $("phasetext").textContent = PHASE_LABEL[phase] || phase;
+  $("phasepill").style.color = css(PHASE_COLOUR[phase] || "--idle");
+
+  // Only a fresh reading may drive the headline number; a stale one belongs in
+  // the results table as history, not on the hero as if it were current.
+  const cur = s.phases && s.phases[phase];
+  const live = cur && cur.age < STALE_AFTER;
+  $("mbs").textContent = live ? (cur.bps / 1e6).toFixed(cur.bps < 1e7 ? 2 : 1) : "—";
+
+  // A long operation is invisible in the throughput trace until it completes,
+  // so the in-flight watchdog is what makes a stall show up immediately.
+  if (s.inflight && s.inflight.elapsed > 0.75) {
+    $("mbs").textContent = "stalled";
+    $("mbs").style.color = css("--critical");
+  } else {
+    $("mbs").style.color = "";
+  }
+
+  const t = b.target;
+  $("deviceline").textContent = t
+    ? `${(t.vendor + " " + t.model).trim() || t.dev} · ${fmtBytes(t.capacity)} · ${t.port} @ ${t.link_name}`
+    : (s.detail || "looking for a stick…");
+
+  renderUnplug(b, s);
+  renderNotes(b, s);
+  $("eject").disabled = !b.target;
+  renderInfo(b, s);
+  renderResults(s, b);
+  // A write phase cannot be pinned on a device we are not writing to.
+  for (const btn of $("pinbar").children) {
+    btn.disabled = !!(b.read_only && btn.dataset.phase.endsWith("write"));
+    btn.style.opacity = btn.disabled ? 0.4 : "";
+  }
+  renderWear(s, t);
+  drawChart(t);
+  drawLatency();
+}
+
+// Anything that is not "running" needs to say so in words. Leaving the reason
+// to the one-word state pill is how a read-only stick came across as the tool
+// silently sitting idle.
+const WHY = {
+  searching: ["Waiting for a USB stick", "Plug one in — testing starts on its own."],
+  waiting:   ["Cannot test this device yet", ""],
+  refused:   ["This device will not be tested", ""],
+  error:     ["Could not start testing", ""],
+  gone:      ["The stick was removed", "Plug it back in and testing resumes."],
+  offline:   ["Lost contact with the server", "Is run.py still running?"],
+  ejecting:  ["Ejecting", "Finishing the current operation, then unmounting."],
+  ejected:   ["Ejected", "You can unplug it now. Plug another in to carry on."],
+  eject_failed: ["Eject failed — do not unplug", "Testing has stopped and the test file is gone, but the filesystem is still mounted."],
+};
+
+// Whether it is safe to pull the stick out right now. Writes are the dangerous
+// case: FAT and exFAT have no journal, so losing power mid-write can damage the
+// filesystem, not just the test file.
+function renderUnplug(b, s) {
+  let colour, text;
+  if (s.state === "ejected") { colour = "--good"; text = "Ejected — safe to unplug"; }
+  else if (s.state === "eject_failed") { colour = "--critical"; text = "Still mounted — do not unplug"; }
+  else if (s.state === "ejecting") { colour = "--warning"; text = "Ejecting…"; }
+  else if (!b.target) { colour = "--muted"; text = "No stick"; }
+  else if (b.writing) { colour = "--critical"; text = "Writing — do not unplug"; }
+  else { colour = "--good"; text = "Reading — safe to unplug"; }
+  $("unplug").style.color = css(colour);
+  $("unplugtext").textContent = text;
+}
+
+function renderNotes(b, s) {
+  const out = [];
+  const why = WHY[s.state];
+  if (why) {
+    const detail = s.detail && s.detail !== s.state ? ` ${s.detail}.` : "";
+    out.push(`<div class="warn stop"><b>${why[0]}.</b>${detail} ${why[1]}</div>`);
+  }
+  for (const n of b.notes || []) out.push(`<div class="warn">${n}</div>`);
+  $("notes").innerHTML = out.join("");
+}
+
+function renderInfo(b, s) {
+  const t = b.target;
+  if (!t) { $("info").innerHTML = ""; return; }
+  const mount = t.mountpoint ? `${t.mountpoint} (${t.fstype})` : "not mounted";
+  const rows = [
+    ["Capacity", fmtBytes(t.capacity)],
+    ["Model", (t.vendor + " " + t.model).trim() || "—"],
+    ["Serial", t.serial || "—"],
+    ["Physical port", t.port],
+    ["Link speed", `${t.link_name}${t.link_ceiling_mbs ? " · ~" + t.link_ceiling_mbs + " MB/s max" : ""}`],
+    // BOT (usb-storage) issues one command at a time; UAS pipelines them. On
+    // random 4K this is frequently the whole explanation for a slow stick.
+    ["Driver", t.driver === "uas" ? "uas (queued)" : t.driver === "usb-storage"
+      ? "usb-storage (BOT, no queuing)" : (t.driver || "—")],
+    ["Filesystem", mount],
+    ["Free space", fmtBytes(t.free)],
+    ["Block size", `${t.logical_block} logical / ${t.physical_block} physical`],
+    ["USB IDs", `${t.vid}:${t.pid}`],
+    ["Max power", t.max_power || "—"],
+    ["Mode", b.read_only ? "read-only — writes skipped" : "read + write"],
+    ["Test file", b.read_only ? "none (read-only device)"
+      : `${fmtBin(b.file_size)} · ${b.direct_io ? "O_DIRECT" : "buffered + fadvise"}`],
+    ["Reads from", `${b.read_source || "—"}${b.raw_read && b.raw_direct ? " · O_DIRECT" : ""}`],
+    ["Sequential I/O", `${fmtBin(b.chunk)} blocks at depth 1`],
+    ["Random I/O", `${fmtBin(b.rand_block)} blocks at depth ${b.queue_depth}`],
+  ];
+  $("info").innerHTML = rows.map(([k, v]) =>
+    `<div><div class="k">${k}</div><div class="v${k === "Filesystem" ? " path" : ""}">${v}</div></div>`).join("");
+}
+
+function renderResults(s, b) {
+  $("results").innerHTML = PHASES.map((p) => {
+    const r = s.phases && s.phases[p];
+    const sw = `<span class="swatch" style="background:${css(PHASE_COLOUR[p])}"></span>`;
+    const blocked = b.read_only && p.endsWith("write");
+    if (blocked || !r) {
+      const msg = blocked ? "skipped — device is read-only" : "not run yet";
+      return `<tr><td>${sw}${PHASE_LABEL[p]}</td>` +
+        `<td colspan="5" style="color:var(--muted)">${msg}</td></tr>`;
+    }
+    const iops = p.startsWith("rand") ? Math.round(r.iops).toLocaleString() : "—";
+    // Dimmed with its age when the phase is not the one currently running.
+    const old = r.age >= STALE_AFTER;
+    const stale = old ? ` style="color:var(--muted)"` : "";
+    const when = old ? ` <span style="color:var(--muted);font-size:11px">${fmtAge(r.age)}</span>` : "";
+    return `<tr${stale}><td>${sw}${PHASE_LABEL[p]}${when}</td>` +
+      `<td class="n">${fmtRate(r.bps)}</td><td class="n">${iops}</td>` +
+      `<td class="n">${fmtLat(r.p50)}</td><td class="n">${fmtLat(r.p99)}</td>` +
+      `<td class="n">${fmtLat(r.max)}</td></tr>`;
+  }).join("");
+}
+
+function renderWear(s, t) {
+  const written = s.bytes_written || 0;
+  const dw = t && t.capacity ? written / t.capacity : 0;
+  const hours = s.elapsed / 3600;
+  const rate = hours > 0.003 ? ` · ~${fmtBytes(written / hours)}/hour` : "";
+  $("wear").innerHTML =
+    `Written this session <b>${fmtBytes(written)}</b> (${dw.toFixed(2)} full-drive writes)` +
+    ` · read <b>${fmtBytes(s.bytes_read || 0)}</b>${rate}.` +
+    ` Continuous writing consumes real flash endurance — fine for a benchmark run,` +
+    ` damaging if left going for days.`;
+}
+
+function renderLog() {
+  $("log").innerHTML = events.slice(-100).reverse().map((e) =>
+    `<tr><td class="t">${e.t.toFixed(1)}s</td><td class="t">${e.kind}</td><td>${e.detail}</td></tr>`
+  ).join("");
+}
+
+// ---- charts ---------------------------------------------------------------
+
+function visible() {
+  if (!latest) return [];
+  const cutoff = latest.elapsed - windowS;
+  return [...bins.values()].filter((b) => b.t >= cutoff).sort((a, b) => a.t - b.t);
+}
+
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr; canvas.height = h * dpr;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawChart(target) {
+  const data = visible();
+  const { ctx, w, h } = setupCanvas($("chart"));
+  const padL = 56, padR = 10, padT = 12, padB = 22;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  if (data.length < 2) return;
+
+  const t0 = data[0].t, t1 = data[data.length - 1].t || t0 + 1;
+  const ceiling = target && target.link_ceiling_mbs ? target.link_ceiling_mbs * 1e6 : 0;
+  const peak = Math.max(...data.map((d) => d.bps), 1e6);
+  // Never scale to the link ceiling — a 20 MB/s stick on a USB3 port would be
+  // squashed into the bottom 5% of the chart and every detail would vanish.
+  const top = peak * 1.15;
+
+  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * plotW;
+  const y = (v) => padT + plotH - (v / top) * plotH;
+
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i <= 4; i++) {
+    const v = (top / 4) * i, py = y(v);
+    ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(w - padR, py); ctx.stroke();
+    ctx.fillStyle = css("--muted"); ctx.textAlign = "right";
+    ctx.fillText((v / 1e6).toFixed(v < 1e7 ? 1 : 0), padL - 7, py);
+  }
+  if (ceiling && ceiling < top) {
+    ctx.strokeStyle = css("--baseline");
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(padL, y(ceiling)); ctx.lineTo(w - padR, y(ceiling)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Drawn as one stroked run per contiguous phase, so a phase change is a
+  // colour change rather than a break in the line.
+  let run = [];
+  const flush = () => {
+    if (run.length < 2) { run = run.slice(-1); return; }
+    // Colour by the LAST point, not the first: the first is the previous run's
+    // final point, carried over only so the line joins up without a gap. Using
+    // it painted every segment after the first in the previous phase's colour.
+    ctx.strokeStyle = css(PHASE_COLOUR[run[run.length - 1].phase] || "--idle");
+    ctx.lineWidth = 1.6; ctx.lineJoin = "round";
+    ctx.beginPath();
+    run.forEach((d, i) => (i ? ctx.lineTo(x(d.t), y(d.bps)) : ctx.moveTo(x(d.t), y(d.bps))));
+    ctx.stroke();
+    run = run.slice(-1);
+  };
+  for (const d of data) {
+    if (run.length && run[run.length - 1].phase !== d.phase) flush();
+    run.push(d);
+  }
+  flush();
+
+  ctx.fillStyle = css("--muted"); ctx.textAlign = "center";
+  for (let i = 0; i <= 4; i++) {
+    const t = t0 + ((t1 - t0) / 4) * i;
+    ctx.fillText(`${(t - t1).toFixed(0)}s`, x(t), h - padB / 2);
+  }
+}
+
+function drawLatency() {
+  const data = visible().filter((d) => d.lat != null);
+  const { ctx, w, h } = setupCanvas($("latchart"));
+  const padL = 56, padR = 10, padT = 10, padB = 18;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const all = visible();
+  if (!data.length || all.length < 2) return;
+
+  const t0 = all[0].t, t1 = all[all.length - 1].t || t0 + 1;
+  // Log scale: latency spans microseconds to seconds on the same stick, and a
+  // linear axis would flatten every normal operation onto the baseline.
+  const lo = 1e-4, hi = Math.max(...data.map((d) => d.lat), 1e-3) * 1.3;
+  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * plotW;
+  const y = (v) => {
+    const f = (Math.log10(Math.max(v, lo)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
+    return padT + plotH - f * plotH;
+  };
+
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  for (const v of [1e-3, 1e-2, 1e-1, 1, 10]) {
+    if (v > hi || v < lo) continue;
+    const py = y(v);
+    ctx.strokeStyle = css("--grid");
+    ctx.beginPath(); ctx.moveTo(padL, py); ctx.lineTo(w - padR, py); ctx.stroke();
+    ctx.fillStyle = css("--muted"); ctx.textAlign = "right";
+    ctx.fillText(v < 1 ? `${v * 1000} ms` : `${v} s`, padL - 7, py);
+  }
+
+  const bw = Math.max(1, plotW / Math.max(all.length, 1) - 0.5);
+  for (const d of data) {
+    ctx.fillStyle = css(PHASE_COLOUR[d.phase] || "--idle");
+    const py = y(d.lat);
+    ctx.fillRect(x(d.t) - bw / 2, py, bw, padT + plotH - py);
+  }
+}
+
+// ---- tooltip --------------------------------------------------------------
+
+$("chart").addEventListener("pointermove", (ev) => {
+  const data = visible();
+  if (!data.length) return;
+  const rect = ev.target.getBoundingClientRect();
+  const padL = 56, padR = 10;
+  const frac = (ev.clientX - rect.left - padL) / (rect.width - padL - padR);
+  const idx = Math.max(0, Math.min(data.length - 1, Math.round(frac * (data.length - 1))));
+  const d = data[idx];
+  const tip = $("tip");
+  tip.innerHTML = `<b>${(d.bps / 1e6).toFixed(2)} MB/s</b> · ${PHASE_LABEL[d.phase] || d.phase}` +
+    (d.lat != null ? `<br>worst op ${fmtLat(d.lat)}` : "");
+  tip.style.opacity = 1;
+  tip.style.left = Math.min(rect.width - 140, ev.clientX - rect.left + 12) + "px";
+  tip.style.top = (ev.clientY - rect.top - 34) + "px";
+});
+$("chart").addEventListener("pointerleave", () => ($("tip").style.opacity = 0));
+
+// ---- controls -------------------------------------------------------------
+
+$("eject").onclick = async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "⏏ Ejecting…";
+  await fetch("/api/eject", { method: "POST" });
+  setTimeout(() => { e.target.textContent = "⏏ Eject"; }, 3000);
+};
+
+$("pause").onclick = (e) => {
+  paused = !paused;
+  e.target.setAttribute("aria-pressed", String(paused));
+  e.target.textContent = paused ? "Resume" : "Pause";
+  if (!paused) render();
+};
+$("window").onchange = (e) => { windowS = +e.target.value; render(); };
+
+$("pinbar").innerHTML = ["", ...PHASES].map((p) =>
+  `<button data-phase="${p}" aria-pressed="${p === "" ? "true" : "false"}">${p === "" ? "rotate" : PHASE_LABEL[p]}</button>`
+).join("");
+$("pinbar").onclick = async (ev) => {
+  const btn = ev.target.closest("button");
+  if (!btn) return;
+  [...$("pinbar").children].forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+  await fetch("/api/pin", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phase: btn.dataset.phase || null }),
+  });
+};
+
+$("devsel").onchange = async (e) => {
+  await fetch("/api/select", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device: e.target.value || null }),
+  });
+};
+
+async function refreshDevices() {
+  try {
+    const r = await fetch("/api/devices");
+    const { devices } = await r.json();
+    const sel = $("devsel"), keep = sel.value;
+    sel.innerHTML = `<option value="">auto-detect</option>` + devices.map((d) =>
+      `<option value="${d.dev}"${d.protected ? " disabled" : ""}>` +
+      `${d.dev} — ${(d.vendor + " " + d.model).trim()} ${fmtBytes(d.capacity)}` +
+      `${d.protected ? " (system disk)" : ""}</option>`).join("");
+    sel.value = keep;
+  } catch (_) { /* the websocket reconnect loop reports connectivity */ }
+}
+
+window.addEventListener("resize", () => render());
+refreshDevices();
+setInterval(refreshDevices, 4000);
+connect();
+</script>
+</body>
+</html>
