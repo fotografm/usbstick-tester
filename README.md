@@ -12,6 +12,15 @@ which does the same job for USB *link quality* using an SDR dongle as the load.
 filesystem, and nothing is ever written to the raw device. The temp file is
 deleted when the program exits.
 
+![usbstick-tester web UI](docs/screenshot.png)
+
+A SanDisk 16 GB on USB 2.0, mid-rotation. Sequential read is flat at the
+480 Mbit/s ceiling (blue), random read and write are far below it (green,
+amber), and sequential write (red) is not just slow but *erratic* — the latency
+chart underneath shows why, with spikes to 1 s and beyond that the throughput
+trace alone would hide. The headline is reporting a write that has been
+outstanding for two seconds.
+
 ---
 
 ## What it measures
@@ -102,6 +111,15 @@ mkdir usbstick-tester
 wget -qO- https://github.com/fotografm/usbstick-tester/archive/refs/heads/main.tar.gz \
   | tar xz -C usbstick-tester --strip-components=1
 cd usbstick-tester
+```
+
+**To update later**, re-run that same `wget` line against the existing directory.
+It overwrites the code and leaves your `.venv` alone, so there is no need to
+reinstall the dependencies:
+
+```bash
+wget -qO- https://github.com/fotografm/usbstick-tester/archive/refs/heads/main.tar.gz \
+  | tar xz -C ~/usbstick-tester --strip-components=1
 ```
 
 ### 3. Create the virtualenv
@@ -287,6 +305,60 @@ Sizes accept `4k`, `512M`, `2G`, `1.5G` or a plain byte count.
 With more than one stick attached, nothing is auto-selected — pick one from the
 dropdown in the UI, or name it with `-d`. Devices that fail the safety checks
 appear in the list but are greyed out and cannot be chosen.
+
+---
+
+## Using the web UI
+
+Nothing needs setting up: plug a stick in and testing starts on its own. Unplug
+it and the tool waits for the next one.
+
+### The controls
+
+| Control | What it does |
+|---|---|
+| **auto-detect** | Which stick to test. With exactly one USB disk attached it is chosen automatically; with several, pick one here. System disks appear greyed out and cannot be selected. |
+| **⏏ Eject** | Stop testing, delete the test file, flush, unmount every filesystem on the device and power the port down. Testing does **not** resume afterwards — see [The eject button](#the-eject-button). |
+| **Pause** | Stops the testing itself, not just the chart. The stick goes idle and becomes safe to unplug. |
+| **60 s** | How much history the charts show — 30 s to 300 s. |
+| **rotate** | Cycle all four tests automatically. This is the default. |
+| **sequential write / read, random read / write** | Hold that one test running continuously instead of cycling. Useful for watching sequential write long enough to reach the cache cliff, or holding random read while you wiggle a connector. |
+
+The phase buttons carry two separate signals, which are easy to confuse:
+
+- **Highlighted** — which phase is *pinned*. In `rotate` that is the rotate
+  button itself.
+- **Coloured dot** — which test is *running right now*. While rotating, the dot
+  moves along the row as the phases cycle.
+
+Switching takes effect immediately; the phase in flight is abandoned rather than
+allowed to finish its slot.
+
+### The indicators
+
+Along the top right, in order:
+
+- **running / searching / paused / ejected / error** — what the tool is doing. If
+  it is anything other than `running`, a banner underneath explains why in plain
+  words and what to do about it.
+- **Writing — do not unplug** / **Reading — safe to unplug** — whether pulling
+  the stick out right now could corrupt anything. See
+  [Is it safe to unplug mid-test?](#is-it-safe-to-unplug-mid-test)
+
+The big number is the current phase's throughput. It is replaced by
+`stalled 4s` or `committing 4s` in red when an operation has been outstanding
+that long — a device that has stopped responding cannot be interrupted, so the
+tool reports the wait rather than appearing frozen.
+
+### The charts
+
+**Throughput** is coloured per phase, with a dashed line at the link's practical
+ceiling. **Operation latency** below it plots the worst completion time in each
+100 ms bin on a log scale — this is where an otherwise respectable-looking stick
+gives itself away, because a mean throughput figure cannot show you a p99 of
+three seconds. **Results** underneath gives per-phase throughput, IOPS and
+latency percentiles over a rolling 10 second window; a phase that is not
+currently running is dimmed and labelled with how long ago it ran.
 
 ---
 
